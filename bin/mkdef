@@ -1,0 +1,546 @@
+#!/usr/bin/perl
+
+use strict;
+use Data::Dumper;
+
+my $pins;
+my $chip;
+
+my $file = shift || die "Usage: mkdef <file.def>";
+
+open(IN, "<$file") || die "Unable to open $file";
+
+my $analogPorts;
+my $boardname = "Unknown Board";
+
+my $pin = 0;
+while (my $line = <IN>) {
+    chomp($line);
+    $line =~ s/^\s+|\s+$//g;
+    if ($line eq "") {
+        next;
+    }
+
+    if ($line =~ /^#\s*([^:]+)\s*:\s*(.*)$/) {
+        my $k = $1;
+        my $v = $2;
+        if ($k =~ /^chip$/i) {
+            $chip = loadChip($v);
+        }
+        if ($k =~ /^name$/i) {
+            $boardname = $v;
+        }
+        next;
+    }
+
+    if ($line =~ /^#/) {
+        next;
+    }
+
+    my @bits = split(/\s+/, $line);
+    my $pname = shift(@bits);
+    my $pdat;
+    $pdat->{name} = $pname;
+    foreach my $bit (@bits) {
+        $pdat->{funcs}->{$bit} = 1;
+    }
+    $pins->{$pin} = $pdat;
+    $pin++;
+}
+close(IN);
+
+if (!$chip) {
+    die "No chip specified in configuration file";
+}
+
+open(OUT, ">Board_Data.c");
+
+printFile($ENV{HOME} . "/.local/share/mkdef/data-preamble.txt");
+
+# Ports:
+print OUT "const uint8_t digital_pin_to_port_PGM[] = {\n";
+
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    if ($n =~ /^R([A-Z])\d+$/) {
+        print OUT "    _IOPORT_P" . $1 . ",    // $p: $n\n";
+    }
+}
+
+print OUT "};\n";
+
+print OUT "\n";
+print OUT "const uint16_t digital_pin_to_bit_mask_PGM[] = {\n";
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    if ($n =~ /^R[A-Z](\d+)$/) {
+        print OUT "    _BV($1),   // $p: $n\n";
+    }
+}
+print OUT "};\n";
+
+print OUT "\n";
+
+print OUT "const uint16_t digital_pin_to_timer_PGM[] = {\n";
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    my $done = 0;
+    foreach my $f (keys %{$pins->{$p}->{funcs}}) {
+        if ($f =~ /^OC(\d+)$/) {
+            print OUT "    _TIMER_$f,   // $p: $n\n";
+            $done = 1;
+        }
+    }
+    if ($done == 0) {
+        print OUT "    NOT_ON_TIMER,   // $p: $n\n";
+    }
+}
+print OUT "};\n";
+
+print OUT "\n";
+
+my $maxAnalog = 0;
+
+print OUT "const uint8_t digital_pin_to_analog_PGM[] = {\n";
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    my $done = 0;
+    foreach my $f (keys %{$pins->{$p}->{funcs}}) {
+        if ($f =~ /^A(\d+)$/) {
+            print OUT "    _BOARD_AN$1,   // $p: $n\n";
+            $analogPorts->{$1}->{name} = $n;
+            $analogPorts->{$1}->{pin} = $p;
+            if ($1 > $maxAnalog) {
+                $maxAnalog = $1;
+            }
+            $done = 1;
+        }
+    }
+    if ($done == 0) {
+        print OUT "    NOT_ANALOG_PIN,   // $p: $n\n";
+    }
+}
+print OUT "};\n";
+print OUT "\n";
+
+print OUT "const uint8_t analog_pin_to_channel_PGM[] = {\n";
+
+for (my $i = 0; $i <= $maxAnalog; $i++) {
+    my $p = $analogPorts->{$i};
+    if (!$p) {
+        print OUT "    NOT_ANALOG_PIN,\n";
+    } else {
+        my $pinfo = $chip->{$p->{name}}->{static};
+        my $chan = -1;
+        foreach my $pi (keys %{$pinfo}) {
+            if ($pi =~ /^AN(\d+)$/) {
+                $chan = $1;
+            }
+        }
+        if ($chan == -1) {
+            print OUT "    NOT_ANALOG_PIN,\n";
+        } else {
+            print OUT "    $chan,     // A$i => AN$chan ($p->{name}, $p->{pin})\n";
+        }
+    }
+}
+print OUT "};\n";
+
+print OUT "\n";
+
+print OUT "const  uint8_t digital_pin_to_pps_out_PGM[] = {\n";
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    if ($n =~ /^R([A-Z]\d+)$/) {
+        my $rp = "RP$1";
+        my $pin = $chip->{$n}->{static}->{$rp};
+        if (($pin == 1) && ($chip->{$n}->{output})) {
+            print OUT "    _PPS_OUT(_PPS_" . $rp . "R),\n";
+        } else {
+            print OUT "    NOT_PPS_PIN,\n";
+        }
+    }
+}
+
+print OUT "};\n";
+print OUT "\n";
+
+print OUT "const  uint8_t digital_pin_to_pps_in_PGM[] = {\n";
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    if ($n =~ /^R([A-Z]\d+)$/) {
+        my $rp = "RP$1";
+        my $pin = $chip->{$n}->{static}->{$rp};
+        if (($pin == 1) && ($chip->{$n}->{output})) {
+            print OUT "    _PPS_IN(_PPS_" . $rp . "),\n";
+        } else {
+            print OUT "    NOT_PPS_PIN,\n";
+        }
+    }
+}
+
+print OUT "};\n";
+print OUT "\n";
+
+my $oc;
+foreach my $p (sort {$a<=>$b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    foreach my $f (keys %{$pins->{$p}->{funcs}}) {
+        if ($f =~ /^OC(\d+)$/) {
+            $oc->{$1}->{name} = $n;
+            $oc->{$1}->{pin} = $p;
+        }
+    }
+}
+    
+print OUT "const uint8_t output_compare_to_digital_pin_PGM[] = {\n";
+for (my $i = 0; $i < 10; $i++) {
+    if ($oc->{$i}) {
+        print OUT "    " . $oc->{$i}->{pin} . ", // " . $oc->{$i}->{name} . "\n";
+    } else {
+        print OUT "    NOT_PPS_PIN,\n";
+    }
+}
+    
+print OUT "};\n";
+print OUT "\n";
+
+my $int;
+foreach my $p (sort {$a <=> $b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    foreach my $f (keys %{$pins->{$p}->{funcs}}) {
+        if ($f =~ /^INT(\d+)$/) {
+            $int->{$1}->{name} = $n;
+            $int->{$1}->{pin} = $p;
+        }
+    }
+}
+
+print OUT "const uint8_t external_int_to_digital_pin_PGM[] = {\n";
+for (my $i = 0; $i < 5; $i++) {
+    if ($int->{$i}) {
+        print OUT "    " . $int->{$i}->{pin} . ", // " . $int->{$i}->{name} . "\n";
+    } else {
+        print OUT "    NOT_PPS_PIN,\n";
+    }
+}
+
+print OUT "};\n";
+print OUT "\n";
+
+
+printFile($ENV{HOME} . "/.local/share/mkdef/data-postamble.txt");
+close(OUT);
+
+
+
+open(OUT, ">Board_Defs.h");
+printFile($ENV{HOME} . "/.local/share/mkdef/defs-preamble.txt");
+
+print OUT "#define _BOARD_NAME_ \"$boardname\"\n";
+print OUT "\n";
+print OUT "#define NUM_DIGITAL_PINS     " . (keys %{$pins}) . "\n";
+print OUT "#define NUM_ANALOG_PINS      " . (keys %{$analogPorts}) . "\n";
+print OUT "#define NUM_OC_PINS          " . (keys %{$oc}) . "\n";
+print OUT "#define NUM_IC_PINS          0\n";
+print OUT "#define NUM_TCK_PINS         0\n";
+print OUT "#define NUM_INT_PINS         " . (keys %{$int}) . "\n";
+print OUT "\n";
+print OUT "#define NUM_DIGITAL_PINS_EXTENDED NUM_DIGITAL_PINS\n";
+print OUT "#define NUM_ANALOG_PINS_EXTENDED NUM_ANALOG_PINS\n";
+print OUT "\n";
+
+my $serial;
+my $dspi;
+my $dtwi;
+my $leds;
+my $buttons;
+my $extra;
+
+foreach my $p (sort {$a <=> $b} keys %{$pins}) {
+    my $n = $pins->{$p}->{name};
+    foreach my $f (keys %{$pins->{$p}->{funcs}}) {
+        if ($f =~ /^S(\d+)RX(\d+)$/) {
+            $serial->{$1}->{rx}->{name} = $n;
+            $serial->{$1}->{rx}->{pin} = $p;
+            $serial->{$1}->{uart} = $2;
+        }
+        if ($f =~ /^S(\d+)TX(\d+)$/) {
+            $serial->{$1}->{tx}->{name} = $n;
+            $serial->{$1}->{tx}->{pin} = $p;
+            $serial->{$1}->{uart} = $2;
+        }
+        if ($f =~ /^S(\d+)SCK(\d+)$/) {
+            $dspi->{$1}->{sck}->{name} = $n;
+            $dspi->{$1}->{sck}->{pin} = $p;
+            $dspi->{$1}->{spi} = $2;
+        }
+        if ($f =~ /^S(\d+)SDI(\d+)$/) {
+            $dspi->{$1}->{sdi}->{name} = $n;
+            $dspi->{$1}->{sdi}->{pin} = $p;
+            $dspi->{$1}->{spi} = $2;
+        }
+        if ($f =~ /^S(\d+)SDO(\d+)$/) {
+            $dspi->{$1}->{sdo}->{name} = $n;
+            $dspi->{$1}->{sdo}->{pin} = $p;
+            $dspi->{$1}->{spi} = $2;
+        }
+        if ($f =~ /^S(\d+)SS(\d+)$/) {
+            $dspi->{$1}->{ss}->{name} = $n;
+            $dspi->{$1}->{ss}->{pin} = $p;
+            $dspi->{$1}->{spi} = $2;
+        }
+        if ($f =~ /^S(\d+)SDA(\d+)$/) {
+            $dtwi->{$1}->{sda}->{name} = $n;
+            $dtwi->{$1}->{sda}->{pin} = $p;
+            $dtwi->{$1}->{i2c} = $2;
+        }
+        if ($f =~ /^S(\d+)SCL(\d+)$/) {
+            $dtwi->{$1}->{scl}->{name} = $n;
+            $dtwi->{$1}->{scl}->{pin} = $p;
+            $dtwi->{$1}->{i2c} = $2;
+        }
+        if ($f =~ /^BTN(\d+)$/) {
+            $buttons->{$1}->{name} = $n;
+            $buttons->{$1}->{pin} = $p;
+        }
+        if ($f =~ /^LED(\d+)$/) {
+            $leds->{$1}->{name} = $n;
+            $leds->{$1}->{pin} = $p;
+        }
+        if ($f =~ /^PIN_(.*)$/) {
+            $extra->{$1}->{name} = $n;
+            $extra->{$1}->{pin} = $p;
+        }
+    }
+}
+
+print OUT "#define NUM_SERIAL_PORTS     " . (keys %{$serial}) . "\n";
+if (keys %{$dspi} > 0) {
+    print OUT "#define NUM_SPI_PORTS        1\n";
+} else {
+    print OUT "#define NUM_SPI_PORTS        0\n";
+}
+print OUT "#define NUM_DSPI_PORTS       " . (keys %{$dspi}) . "\n";
+if (keys %{$dtwi} > 0) {
+    print OUT "#define NUM_I2C_PORTS        1\n";
+} else {
+    print OUT "#define NUM_I2C_PORTS        0\n";
+}
+print OUT "#define NUM_DTWI_PORTS       " . (keys %{$dtwi}) . "\n";
+
+print OUT "\n";
+
+print OUT "#define NUM_LED              " . (keys %{$leds}) . "\n";
+print OUT "#define NUM_BTN              " . (keys %{$buttons}) . "\n";
+print OUT "#define NUM_SWT              0\n";
+print OUT "#define NUM_SERVO            0\n";
+print OUT "\n";
+
+foreach my $p (sort {$a <=> $b} keys %{$buttons}) {
+    print OUT "#define PIN_BTN$p             " . $buttons->{$p}->{pin} . "\n";
+}
+print OUT "\n";
+    
+foreach my $p (sort {$a <=> $b} keys %{$leds}) {
+    print OUT "#define PIN_LED$p             " . $leds->{$p}->{pin} . "\n";
+}
+print OUT "\n";
+    
+foreach my $p (sort {$a <=> $b} keys %{$int}) {
+    print OUT "#define PIN_INT$p             " . $int->{$p}->{pin} . "\n";
+}
+print OUT "\n";
+    
+foreach my $p (sort {$a <=> $b} keys %{$extra}) {
+    print OUT "#define PIN_$p             " . $extra->{$p}->{pin} . "\n";
+}
+print OUT "\n";
+    
+foreach my $p (sort {$a <=> $b} keys %{$analogPorts}) {
+    print OUT "static const uint8_t A$p     = " . $analogPorts->{$p}->{pin} . ";\n";
+}
+print OUT "\n";
+
+if (keys %{$dtwi} > 0) {
+    if ($dspi->{0}->{ss}->{pin} ) {
+        print OUT "static const uint8_t SS     = " . $dspi->{0}->{ss}->{pin} . ";\n";
+    }
+    print OUT "static const uint8_t MOSI   = " . $dspi->{0}->{sdo}->{pin} . ";\n";
+    print OUT "static const uint8_t MISO   = " . $dspi->{0}->{sdi}->{pin} . ";\n";
+    print OUT "static const uint8_t SCK    = " . $dspi->{0}->{sck}->{pin} . ";\n";
+}
+print OUT "\n";
+foreach my $p (sort {$a <=> $b} keys %{$dspi}) {
+    if ($dspi->{$p}->{ss}->{pin} ) {
+        print OUT "static const uint8_t PIN_DSPI${p}_SS     = " . $dspi->{$p}->{ss}->{pin} . ";\n";
+    }
+    print OUT "static const uint8_t PIN_DSPI${p}_MOSI   = " . $dspi->{$p}->{sdo}->{pin} . ";\n";
+    print OUT "static const uint8_t PIN_DSPI${p}_MISO   = " . $dspi->{$p}->{sdi}->{pin} . ";\n";
+    print OUT "static const uint8_t PIN_DSPI${p}_SCK    = " . $dspi->{$p}->{sck}->{pin} . ";\n";
+    print OUT "\n";
+}
+
+
+
+print OUT "#if defined(OPT_BOARD_INTERNAL)\n";
+print OUT "#define OPT_BOARD_INIT          0   //board needs no special init code\n";
+print OUT "#define OPT_BOARD_DIGITAL_IO    0   //board does not extend digital i/o functions\n";
+print OUT "#define OPT_BOARD_ANALOG_READ   0   //board does not extend analogRead\n";
+print OUT "#define OPT_BOARD_ANALOG_WRITE  0   //board does not extend analogWrite\n";
+print OUT "\n";
+
+
+
+foreach my $p (sort {$a <=> $b} keys %{$serial}) {
+    print OUT "#define _SER${p}_BASE            _UART" . $serial->{$p}->{uart} . "_BASE_ADDRESS\n";
+    print OUT "#define _SER${p}_IRQ             _UART" . $serial->{$p}->{uart} . "_FAULT_VECTOR\n";
+    print OUT "#define _SER${p}_VECTOR          _UART" . $serial->{$p}->{uart} . "_FAULT_VECTOR\n";
+    print OUT "#define _SER${p}_IPL_ISR         IPL1SRS\n";
+    print OUT "#define _SER${p}_IPL             2\n";
+    print OUT "#define _SER${p}_SPL             0\n";
+    print OUT "#define _SER${p}_TX_OUT          PPS_OUT_U" . $serial->{$p}->{uart} . "TX\n";
+    print OUT "#define _SER${p}_TX_PIN          " . $serial->{$p}->{tx}->{pin} . "\n";
+    print OUT "#define _SER${p}_RX_IN           PPS_IN_U" . $serial->{$p}->{uart} . "RX\n";
+    print OUT "#define _SER${p}_RX_PIN          " . $serial->{$p}->{rx}->{pin} . "\n";
+    print OUT "\n";
+}
+
+foreach my $p (sort {$a <=> $b} keys %{$dspi}) {
+    print OUT "#define _DSPI${p}_BASE            _SPI" . $dspi->{$p}->{spi} . "_BASE_ADDRESS\n";
+    print OUT "#define _DSPI${p}_ERR_IRQ         _SPI" . $dspi->{$p}->{spi} . "_FAULT_VECTOR\n";
+    print OUT "#define _DSPI${p}_RX_IRQ          _SPI" . $dspi->{$p}->{spi} . "_RX_VECTOR\n";
+    print OUT "#define _DSPI${p}_TX_IRQ          _SPI" . $dspi->{$p}->{spi} . "_TX_VECTOR\n";
+    print OUT "#define _DSPI${p}_VECTOR          _SPI" . $dspi->{$p}->{spi} . "_FAULT_VECTOR\n";
+    print OUT "#define _DSPI${p}_IPL_ISR         IPL3SRS\n";
+    print OUT "#define _DSPI${p}_IPL             3\n";
+    print OUT "#define _DSPI${p}_SPL             0\n";
+    print OUT "#define _DSPI${p}_MISO_IN         PPS_IN_SDI" . $dspi->{$p}->{spi} . "\n";
+    print OUT "#define _DSPI${p}_MISO_PIN        " . $dspi->{$p}->{sdi}->{pin} . "\n";
+    print OUT "#define _DSPI${p}_MOSI_OUT        PPS_OUT_SDO" . $dspi->{$p}->{spi} . "\n";
+    print OUT "#define _DSPI${p}_MOSI_PIN        " . $dspi->{$p}->{sdo}->{pin} . "\n";
+    print OUT "\n";
+}
+
+foreach my $p (sort {$a <=> $b} keys %{$dtwi}) {
+    print OUT "#define _DTWI${p}_BASE            _I2C" . $dtwi->{$p}->{i2c} . "_BASE_ADDRESS\n";
+    print OUT "#define _DTWI${p}_BUS_IRQ         _I2C" . $dtwi->{$p}->{i2c} . "_BUS_VECTOR\n";
+    print OUT "#define _DTWI${p}_VECTOR          _I2C" . $dtwi->{$p}->{i2c} . "_BUS_VECTOR\n";
+    print OUT "#define _DTWI${p}_IPL_ISR         IPL3SRS\n";
+    print OUT "#define _DTWI${p}_IPL             3\n";
+    print OUT "#define _DTWI${p}_SPL             0\n";
+    print OUT "#define _DTWI${p}_SCL_PIN         " . $dtwi->{$p}->{scl}->{pin} . "\n";
+    print OUT "#define _DTWI${p}_SDA_PIN         " . $dtwi->{$p}->{sda}->{pin} . "\n";
+    print OUT "\n";
+}
+
+my $ports;
+foreach my $p (keys %{$chip}) {
+    if ($p =~ /^R([A-Z])\d+$/) {
+        $ports->{$1} = 1;
+    }
+}
+
+foreach my $p (sort keys %{$ports}) {
+    print OUT "#define _PORT$p\n";
+}
+
+
+
+
+printFile($ENV{HOME} . "/.local/share/mkdef/defs-postamble.txt");
+close(OUT);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+sub loadChip($) {
+    my $chipname = shift;
+    open(C, "<" . $ENV{HOME} . "/.local/share/mkdef/chips/$chipname.chp") || die "Cannot find chip $chipname";
+    my $doing = 0;
+    my $c;
+    while (my $l = <C>) {
+        chomp($l);
+        $l =~ s/^\s+|\s+$//g;
+        if ($l eq "") {
+            next;
+        }
+
+        if ($l =~ /^#/) {
+            next;
+        }
+
+        my @bits = split(/\s+/, $l);
+
+        if ($bits[0] eq "pin") {
+            my @funcs = split(/\//, $bits[1]);
+            my $n;
+            my $f;
+            foreach my $k (@funcs) {
+                if ($k =~ /^R[A-Z]\d+$/) {
+                    $n = $k;
+                } else {
+                    $f->{$k} = 1;
+                }
+            }
+            $c->{$n}->{static} = $f;
+            next;
+        }
+
+        if ($bits[0] eq "inmap") {
+            my @pbits = split(/\//, $bits[1]);
+            my @fbits = split(/\//, $bits[2]);
+
+            foreach my $p (@pbits) {
+                if ($p =~ /^RP([A-Z]\d+)$/) {
+                    $p = "R$1";
+                }
+                foreach my $f (@fbits) {
+                    $c->{$p}->{input}->{$f} = 1;
+                }
+            }
+            next;
+        }
+
+        if ($bits[0] eq "outmap") {
+            my @pbits = split(/\//, $bits[1]);
+            my @fbits = split(/\//, $bits[2]);
+
+            foreach my $p (@pbits) {
+                if ($p =~ /^RP([A-Z]\d+)$/) {
+                    $p = "R$1";
+                }
+                foreach my $f (@fbits) {
+                    $c->{$p}->{output}->{$f} = 1;
+                }
+            }
+            next;
+        }
+    }
+    close(C);
+    return $c;
+}
+
+sub printFile($$) {
+    my $file = shift;
+
+    open(F, "<$file") || die "Can't open $file";
+    while (my $l = <F>) {
+        print OUT $l;
+    }
+    close(F);
+}

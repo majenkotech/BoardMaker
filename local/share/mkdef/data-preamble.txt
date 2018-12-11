@@ -1,0 +1,79 @@
+#if !defined(BOARD_DATA_C)
+#define BOARD_DATA_C
+
+#include <inttypes.h>
+
+#if defined(OPT_BOARD_DATA)
+
+/* ------------------------------------------------------------ */
+/* This table is used to map from port number to the address of
+** the TRIS register for the port. This is used for setting the
+** pin direction.
+*/
+const uint32_t port_to_tris_PGM[] = {
+    NOT_A_PORT,                //index value 0 is not used
+
+#if defined(_PORTA)
+    (uint32_t)&TRISA,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTB)
+    (uint32_t)&TRISB,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTC)
+    (uint32_t)&TRISC,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTD)
+    (uint32_t)&TRISD,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTE)
+    (uint32_t)&TRISE,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTF)
+    (uint32_t)&TRISF,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTG)
+    (uint32_t)&TRISG,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTH)
+    (uint32_t)&TRISH,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTJ)
+    (uint32_t)&TRISJ,
+#else
+    NOT_A_PORT,
+#endif
+
+#if defined(_PORTK)
+    (uint32_t)&TRISK,
+#else
+    NOT_A_PORT,
+#endif
+    
+    NOT_A_PORT,
+};  
+
+

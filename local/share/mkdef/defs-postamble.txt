@@ -1,0 +1,22 @@
+
+#define _JTAG 0
+
+#endif  // OPT_BOARD_INTERNAL
+
+#define ADCRANGE        4096ul              // analog read will return a max number of ADCRANGE-1
+#define ADCTADFREQ      25000000ul          // How fast to run the TAD ADC clock
+#define ADCTADSH        68ul                // How many TADs the Sample and Hold will charge
+
+/* ------------------------------------------------------------ */
+/*                  Defines for the On Board uSD                */
+/* ------------------------------------------------------------ */
+
+#define _uSD_SPI_CONFIG_
+
+#define SD_CS_PIN PIN_DSPI0_SS
+
+#define DefineSDSPI(spi) DSPI0 spi
+#define DefineDSDVOL(vol, spi) DSDVOL vol(spi, 10)
+
+#endif  // BOARD_DEFS_H
+
